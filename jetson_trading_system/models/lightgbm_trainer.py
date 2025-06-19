@@ -295,30 +295,27 @@ class LightGBMTrainer:
         
         return features
     
-    def train_model(self, 
-                   symbol: str,
-                   start_date: str,
-                   end_date: str,
-                   cv_folds: int = 5,
-                   early_stopping_rounds: int = 100) -> Dict[str, Any]:
+    def train_model(self,
+                    symbol: str,
+                    X: pd.DataFrame,
+                    y: pd.Series,
+                    cv_folds: int = 5,
+                    early_stopping_rounds: int = 100) -> Optional[Dict[str, Any]]:
         """
-        Train LightGBM model with time series cross-validation
-        
+        Train LightGBM model with time series cross-validation using pre-computed features.
+
         Args:
-            symbol: Stock symbol
-            start_date: Training start date
-            end_date: Training end date
-            cv_folds: Number of CV folds
-            early_stopping_rounds: Early stopping rounds
-            
+            symbol: Stock symbol.
+            X: DataFrame of features for training.
+            y: Series of target labels.
+            cv_folds: Number of cross-validation folds.
+            early_stopping_rounds: Rounds for early stopping.
+
         Returns:
-            Training results dictionary
+            A dictionary with training results, or None if training fails.
         """
         try:
-            self.logger.info(f"Starting training for {symbol}")
-            
-            # Prepare data
-            X, y = self.prepare_training_data(symbol, start_date, end_date)
+            self.logger.info(f"Starting training for {symbol} with pre-computed features.")
             
             if len(X) < 100:
                 raise ValueError(f"Insufficient training data: {len(X)} samples")

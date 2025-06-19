@@ -19,6 +19,7 @@ from jetson_trading_system.models.lightgbm_trainer import LightGBMTrainer
 from jetson_trading_system.models.model_predictor import ModelPredictor
 from jetson_trading_system.risk.position_sizer import PositionSizer, SizingInput
 from jetson_trading_system.features.technical_indicators import TechnicalIndicators
+from jetson_trading_system.features.feature_engine import FeatureEngine
 
 class BacktestState(Enum):
     """Backtest execution states"""
@@ -109,7 +110,7 @@ class ZiplineEngine:
         self.model_trainer = None
         self.model_predictor = None
         self.position_sizer = PositionSizer()
-        self.ta_calculator = TechnicalIndicators()
+        self.feature_engine = FeatureEngine()
         
         # Backtest state
         self.state = BacktestState.INITIALIZING
@@ -131,8 +132,7 @@ class ZiplineEngine:
         
         # Data cache - pre-loaded at initialization
         self.price_data = {}  # symbol -> DataFrame
-        self.technical_indicators = {}  # symbol -> DataFrame (database-sourced, ML-ready)
-        self.indicator_cache = {}  # symbol -> date -> features (for fast lookup)
+        self.all_features = {} # symbol -> DataFrame of all historical features
         
         self.logger.info(f"ZiplineEngine initialized: {start_date} to {end_date}")
     
@@ -173,122 +173,123 @@ class ZiplineEngine:
             raise
     
     def _prepare_data(self):
-        """Prepare historical data for backtesting"""
+        """Prepare historical data and generate all features for the backtest period."""
         try:
-            self.logger.info("Preparing historical data...")
-            
-            # Load price data for all symbols
+            self.logger.info("Preparing historical data for backtest...")
+
+            # Define date ranges
+            backtest_start_str = self.start_date.strftime("%Y-%m-%d")
+            backtest_end_str = self.end_date.strftime("%Y-%m-%d")
+            # Fetch a bit more historical data for feature calculation lookback
+            features_start_str = (self.start_date - timedelta(days=365)).strftime("%Y-%m-%d")
+
+            # 1. Load price data for backtest period
             for symbol in self.symbols:
                 try:
-                    # Get full available data range for robust backtesting
-                    extended_start = "2023-02-20"  # Use full available dataset
-                    end_date_str = self.end_date.strftime("%Y-%m-%d")
-                    
-                    price_data = self.db_manager.get_market_data(symbol, extended_start, end_date_str)
-                    
+                    # Load data for the full range needed for features + backtest
+                    price_data = self.db_manager.get_market_data(symbol, features_start_str, backtest_end_str)
                     if price_data is not None and not price_data.empty:
                         self.price_data[symbol] = price_data
-                        
-                        # Load pre-calculated technical indicators from database (ML-ready format)
-                        try:
-                            db_indicators = self.db_manager.get_technical_indicators(
-                                symbol=symbol,
-                                start_date=extended_start,
-                                end_date=end_date_str,
-                                pivot=True
-                            )
-                            
-                            if db_indicators is not None and not db_indicators.empty:
-                                # Use database indicators (already ML-ready)
-                                self.technical_indicators[symbol] = db_indicators
-                                self.logger.info(f"Loaded {len(db_indicators)} pre-calculated indicators for {symbol}")
-                                
-                                # Build fast lookup cache for backtesting
-                                self.indicator_cache[symbol] = {}
-                                for date_idx in db_indicators.index:
-                                    date_str = date_idx.strftime("%Y-%m-%d") if hasattr(date_idx, 'strftime') else str(date_idx)
-                                    self.indicator_cache[symbol][date_str] = db_indicators.loc[date_idx]
-                            else:
-                                # Fallback to real-time calculation only if database empty
-                                self.logger.warning(f"No database indicators for {symbol}, calculating real-time")
-                                indicators = self.ta_calculator.calculate_all_indicators(price_data)
-                                self.technical_indicators[symbol] = indicators
-                                
-                        except Exception as e:
-                            self.logger.warning(f"Failed to load database indicators for {symbol}: {e}")
-                            # Fallback to real-time calculation
-                            indicators = self.ta_calculator.calculate_all_indicators(price_data)
-                            self.technical_indicators[symbol] = indicators
-                        
-                        self.logger.info(f"Loaded {len(price_data)} bars for {symbol}")
+                        self.logger.info(f"Loaded {len(price_data)} price bars for {symbol}")
                     else:
-                        self.logger.warning(f"No data available for {symbol}")
-                        
+                        self.logger.warning(f"No price data available for {symbol}")
                 except Exception as e:
-                    self.logger.error(f"Error loading data for {symbol}: {e}")
-            
-            # Load benchmark data with full available range
+                    self.logger.error(f"Error loading price data for {symbol}: {e}")
+
+            # 2. Generate features for the backtesting period (no target needed)
+            self.logger.info("Generating features for the backtest period...")
+            self.all_features = self.feature_engine.generate_features(
+                symbols=self.symbols,
+                start_date=features_start_str,
+                end_date=backtest_end_str,
+                target_column=None  # No target needed for prediction features
+            )
+
+            for symbol, features in self.all_features.items():
+                if features is not None and not features.empty:
+                    self.logger.info(f"Generated {len(features)} feature rows for {symbol} for backtesting")
+                else:
+                    self.logger.warning(f"Backtest feature generation returned empty for {symbol}")
+
+            # 3. Load benchmark data
             if self.benchmark_symbol:
-                extended_start = "2023-02-20"  # Use full available dataset
-                end_date_str = self.end_date.strftime("%Y-%m-%d")
-                
-                self.benchmark_data = self.db_manager.get_market_data(
-                    self.benchmark_symbol, extended_start, end_date_str
-                )
-            
-            self.logger.info(f"Data preparation completed for {len(self.price_data)} symbols")
+                try:
+                    self.benchmark_data = self.db_manager.get_market_data(
+                        self.benchmark_symbol, features_start_str, backtest_end_str
+                    )
+                except Exception as e:
+                    self.logger.error(f"Error loading benchmark data for {self.benchmark_symbol}: {e}")
+
+            self.logger.info(f"Backtest data preparation completed for {len(self.price_data)} symbols")
             
         except Exception as e:
-            self.logger.error(f"Error preparing data: {e}")
+            self.logger.error(f"Critical error in _prepare_data: {e}")
             raise
     
+    def _prepare_training_data(self, end_date: datetime) -> Dict[str, pd.DataFrame]:
+        """Prepares training data by generating features and the target variable."""
+        self.logger.info(f"Preparing training data up to {end_date.strftime('%Y-%m-%d')}...")
+        
+        training_start_str = (end_date - timedelta(days=4 * 365)).strftime('%Y-%m-%d') # 4 years of data for training
+        training_end_str = end_date.strftime('%Y-%m-%d')
+
+        training_features = self.feature_engine.generate_features(
+            symbols=self.symbols,
+            start_date=training_start_str,
+            end_date=training_end_str,
+            target_column='binary_threshold'  # Generate target for training
+        )
+        return training_features
+
     def _train_initial_models(self):
-        """Train initial models using data before backtest start"""
+        """Train initial models using a dedicated training data preparation step."""
         try:
             self.logger.info("Training initial models...")
+            training_end_date = self.start_date - timedelta(days=1)
             
-            # Use the full available data range for initial training
-            # Since our database now spans 2023-02-20 to 2025-06-19, use this broader range
-            training_start = "2023-02-20"  # First available date in database
-            training_end = "2024-05-31"   # Use data up to just before backtest starts
+            # 1. Prepare training data explicitly
+            training_data_dict = self._prepare_training_data(training_end_date)
             
             models_trained = 0
             for symbol in self.symbols:
-                try:
-                    if symbol in self.price_data:
-                        self.logger.info(f"Training model for {symbol}")
-                        result = self.model_trainer.train_model(
-                            symbol=symbol,
-                            start_date=training_start,
-                            end_date=training_end
-                        )
+                if symbol in training_data_dict and training_data_dict[symbol] is not None:
+                    try:
+                        training_features = training_data_dict[symbol]
                         
-                        if result:
-                            self.logger.info(f"Model trained for {symbol} - AUC: {result['cv_results']['mean_auc']:.3f}")
-                            models_trained += 1
-                        else:
-                            self.logger.warning(f"Failed to train model for {symbol}")
+                        if not training_features.empty and 'target' in training_features.columns:
+                            # Drop rows where the target is NaN (expected for last few rows)
+                            training_data = training_features.dropna(subset=['target'])
                             
-                except Exception as e:
-                    self.logger.warning(f"Model training failed for {symbol}: {e}")
-                    # Continue with other symbols
-                    continue
+                            if not training_data.empty:
+                                X = training_data.drop(columns=['target'])
+                                y = training_data['target']
+                                
+                                self.logger.info(f"Training initial model for {symbol} with {len(X)} samples.")
+                                result = self.model_trainer.train_model(symbol=symbol, X=X, y=y)
+                                
+                                if result:
+                                    self.logger.info(f"Model trained for {symbol} - AUC: {result.get('cv_results',{}).get('mean_auc', 'N/A'):.3f}")
+                                    models_trained += 1
+                                else:
+                                    self.logger.warning(f"Failed to train model for {symbol}")
+                            else:
+                                self.logger.warning(f"No training data with a valid target for {symbol} before {training_end_date}")
+                        else:
+                            self.logger.warning(f"No target column found in training data for {symbol}")
+
+                    except Exception as e:
+                        self.logger.error(f"Error training initial model for {symbol}: {e}", exc_info=True)
             
-            # Load trained models into predictor (only successful ones)
-            for symbol in self.symbols:
-                try:
-                    self.model_predictor._load_model(symbol)
-                except Exception as e:
-                    self.logger.warning(f"Failed to load model for {symbol}: {e}")
-            
+            # 2. Load all available models into the predictor for the backtest
+            self.model_predictor._load_available_models()
+
             if models_trained == 0:
-                self.logger.warning("No models were successfully trained - using technical analysis only")
+                self.logger.warning("No models were successfully trained.")
             else:
-                self.logger.info(f"Initial model training completed - {models_trained}/{len(self.symbols)} models trained")
-            
+                self.logger.info(f"Initial model training completed: {models_trained}/{len(self.symbols)} models trained.")
+
         except Exception as e:
-            self.logger.warning(f"Model training failed - using technical analysis only: {e}")
-            # Don't raise exception, continue with technical analysis
+            self.logger.critical(f"A critical error occurred during initial model training: {e}", exc_info=True)
     
     def run_backtest(self) -> BacktestResults:
         """
@@ -435,80 +436,25 @@ class ZiplineEngine:
         return signals
     
     def _get_features_for_date(self, symbol: str, date: datetime) -> Optional[pd.DataFrame]:
-        """Get features for a specific symbol and date using pre-loaded cache"""
+        """Get pre-calculated features for a specific symbol and date."""
         try:
-            date_str = date.strftime("%Y-%m-%d")
-            
-            # Use fast lookup cache first (core fix - no database queries during backtest)
-            if symbol in self.indicator_cache and date_str in self.indicator_cache[symbol]:
-                cached_features = self.indicator_cache[symbol][date_str]
+            if symbol in self.all_features:
+                symbol_features = self.all_features[symbol]
                 
-                # Convert Series to DataFrame for consistency
-                if isinstance(cached_features, pd.Series):
-                    return pd.DataFrame([cached_features])
-                return cached_features
-            
-            # Fallback to pre-loaded indicators (still no database queries)
-            if symbol in self.technical_indicators:
-                indicators = self.technical_indicators[symbol]
+                # Find the most recent available features on or before the given date
+                # This handles non-trading days by using the last available data
+                available_features = symbol_features[symbol_features.index <= date]
                 
-                # Find the closest date <= target date
-                valid_dates = indicators.index[indicators.index <= date]
-                if len(valid_dates) > 0:
-                    latest_date = valid_dates.max()
-                    latest_features = indicators.loc[latest_date:latest_date]
-                    
-                    # Cache this lookup for future use
-                    if symbol not in self.indicator_cache:
-                        self.indicator_cache[symbol] = {}
-                    self.indicator_cache[symbol][date_str] = latest_features.iloc[0]
-                    
-                    return latest_features
-            
-            # Final fallback - create basic features from price data (no database)
-            if symbol in self.price_data:
-                price_data = self.price_data[symbol]
-                mask = price_data.index <= date
-                historical_data = price_data[mask]
-                
-                if len(historical_data) >= 5:  # Minimum for basic calculations
-                    latest_price = historical_data.tail(1)
-                    
-                    # Basic calculations
-                    returns_1d = historical_data['close'].pct_change().iloc[-1] if len(historical_data) > 1 else 0.0
-                    returns_5d = historical_data['close'].pct_change(5).iloc[-1] if len(historical_data) > 5 else 0.0
-                    
-                    # Volume features
-                    if len(historical_data) >= 20:
-                        vol_ratio = historical_data['volume'].iloc[-5:].mean() / historical_data['volume'].iloc[-20:].mean()
-                    else:
-                        vol_ratio = 1.0
-                    
-                    # Create minimal but functional feature set
-                    basic_features = pd.DataFrame({
-                        'returns_1d': [returns_1d],
-                        'returns_5d': [returns_5d],
-                        'volume_ratio': [vol_ratio],
-                        'rsi': [50.0],  # Neutral values
-                        'macd': [0.0],
-                        'bb_position': [0.5]
-                    }, index=latest_price.index)
-                    
-                    return basic_features
-            
+                if not available_features.empty:
+                    # Return the last row as a new DataFrame
+                    return available_features.tail(1)
+
+            self.logger.warning(f"No features found for {symbol} on or before {date.strftime('%Y-%m-%d')}")
             return None
             
         except Exception as e:
-            self.logger.warning(f"Error getting features for {symbol} on {date}: {e}")
-            # Ultra-minimal fallback
-            return pd.DataFrame({
-                'returns_1d': [0.0],
-                'returns_5d': [0.0],
-                'volume_ratio': [1.0],
-                'rsi': [50.0],
-                'macd': [0.0],
-                'bb_position': [0.5]
-            }, index=[date])
+            self.logger.error(f"Error getting features for {symbol} on {date}: {e}")
+            return None
     
     def _get_model_prediction(self, symbol: str, features: pd.DataFrame) -> Optional[Dict[str, Any]]:
         """Get model prediction for features using actual ModelPredictor"""
@@ -518,7 +464,9 @@ class ZiplineEngine:
             
             # Use actual model predictor for inference
             if self.model_predictor:
-                prediction = self.model_predictor.predict(symbol, use_cache=True)
+                # Pass the dynamically generated features to the predictor
+                # Caching is now handled by the predictor with date-specific keys
+                prediction = self.model_predictor.predict(symbol, features_df=features, use_cache=True)
                 
                 if prediction:
                     # Convert ModelPredictor output to expected format
@@ -682,6 +630,7 @@ class ZiplineEngine:
             
             if action in ['BUY', 'STRONG_BUY'] and position_size > 0:
                 # Check if we can afford the trade
+                position_size = int(position_size)  # Ensure position_size is integer
                 trade_value = position_size * price
                 commission = position_size * self.commission_per_share
                 
@@ -710,7 +659,7 @@ class ZiplineEngine:
                 self.open_trades[symbol] = {
                     'entry_date': self.current_date,
                     'entry_price': price,
-                    'quantity': quantity,
+                    'quantity': int(quantity),  # Ensure quantity is stored as integer
                     'side': side,
                     'confidence': confidence,
                     'commission': commission
@@ -741,8 +690,12 @@ class ZiplineEngine:
             quantity = int(trade_info['quantity'])  # Ensure quantity is an integer
             entry_price = trade_info['entry_price']
             
-            pnl = quantity * (exit_price - entry_price) - trade_info['commission'] - commission
-            pnl_pct = (exit_price / entry_price - 1) * 100
+            if trade_info['side'] == 'long':
+                pnl = quantity * (exit_price - entry_price) - trade_info['commission'] - commission
+                pnl_pct = (exit_price / entry_price - 1) * 100 if entry_price != 0 else 0.0
+            else:  # short side
+                pnl = quantity * (entry_price - exit_price) - trade_info['commission'] - commission
+                pnl_pct = (entry_price / exit_price - 1) * 100 if exit_price != 0 else 0.0
             
             duration = (self.current_date - trade_info['entry_date']).days
             
@@ -776,33 +729,45 @@ class ZiplineEngine:
     def _check_exits(self):
         """Check for position exits based on multiple criteria"""
         try:
-            # Get trading parameters
-            max_hold_days = getattr(TradingConfig, 'MAX_HOLD_DAYS', 30)
-            stop_loss_pct = getattr(TradingConfig, 'STOP_LOSS_PCT', 0.02)  # 2% stop loss
-            profit_target_pct = getattr(TradingConfig, 'PROFIT_TARGET_PCT', 0.03)  # 3% profit target
+            # Get trading parameters from an instance to correctly resolve properties
+            trade_config = TradingConfig()
+            max_hold_days = getattr(trade_config, 'MAX_HOLD_DAYS', 30)
+            stop_loss_pct = getattr(trade_config, 'STOP_LOSS_PCT', 2.0) / 100.0
+            profit_target_pct = getattr(trade_config, 'PROFIT_TARGET_PCT', 3.0) / 100.0
             
             for symbol in list(self.open_trades.keys()):
                 trade_info = self.open_trades[symbol]
+                
+                # Skip checking exits on the day of entry to avoid immediate closure
+                if self.current_date <= trade_info['entry_date']:
+                    continue
+
                 days_held = (self.current_date - trade_info['entry_date']).days
                 current_price = self._get_price(symbol, self.current_date)
                 
                 if current_price is None:
+                    self.logger.warning(f"Could not find price for {symbol} on {self.current_date}, skipping exit check.")
                     continue
                 
                 entry_price = trade_info['entry_price']
-                quantity = int(trade_info['quantity'])  # Ensure quantity is an integer
+                
+                # Ensure entry price is not zero to avoid division errors
+                if entry_price == 0:
+                    continue
+
+                quantity = int(trade_info['quantity'])
                 side = trade_info['side']
                 
                 # Calculate current P&L percentage
                 if side == 'long':
-                    pnl_pct = (current_price - entry_price) / entry_price
+                    pnl_pct = (current_price / entry_price) - 1.0
                 else:  # short
-                    pnl_pct = (entry_price - current_price) / entry_price
+                    pnl_pct = (entry_price / current_price) - 1.0
                 
                 exit_reason = None
                 
                 # 1. Stop Loss Check
-                if pnl_pct <= -stop_loss_pct:
+                if pnl_pct <= -stop_loss_pct and days_held > 0:
                     exit_reason = f"stop_loss_{stop_loss_pct:.1%}"
                 
                 # 2. Profit Target Check
@@ -867,7 +832,8 @@ class ZiplineEngine:
             position_value = abs(quantity) * current_price
             
             # Check if position is too large relative to portfolio
-            max_position_pct = getattr(TradingConfig, 'MAX_POSITION_SIZE_PCT', 0.05)  # 5%
+            trade_config = TradingConfig()
+            max_position_pct = getattr(trade_config, 'MAX_POSITION_SIZE_PCT', 0.05)  # 5%
             current_position_pct = position_value / self.portfolio_value
             
             if current_position_pct > max_position_pct * 1.5:  # 50% buffer before exit
@@ -930,30 +896,43 @@ class ZiplineEngine:
         return days_since_start > 0 and days_since_start % self.retrain_frequency == 0
     
     def _retrain_models(self):
-        """Retrain models with updated data"""
+        """Retrain models with updated data using pre-generated features."""
         try:
-            self.logger.info(f"Retraining models on {self.current_date}")
+            self.logger.info(f"Retraining models on {self.current_date.strftime('%Y-%m-%d')}...")
             
-            # Use rolling window for retraining
-            training_end = (self.current_date - timedelta(days=1)).strftime("%Y-%m-%d")
-            training_start = (self.current_date - timedelta(days=365)).strftime("%Y-%m-%d")
+            # 1. Prepare fresh training data up to the current backtest date
+            training_data_dict = self._prepare_training_data(self.current_date)
             
             for symbol in self.symbols:
-                try:
-                    self.model_trainer.train_model(
-                        symbol=symbol,
-                        start_date=training_start,
-                        end_date=training_end
-                    )
-                    
-                    # Reload model
-                    self.model_predictor.reload_model(symbol)
-                    
-                except Exception as e:
-                    self.logger.error(f"Error retraining model for {symbol}: {e}")
-            
+                if symbol in training_data_dict and training_data_dict[symbol] is not None:
+                    try:
+                        training_features = training_data_dict[symbol]
+                        
+                        if not training_features.empty and 'target' in training_features.columns:
+                            training_data = training_features.dropna(subset=['target'])
+
+                            if not training_data.empty:
+                                X = training_data.drop(columns=['target'])
+                                y = training_data['target']
+
+                                self.logger.info(f"Retraining model for {symbol} with {len(X)} samples.")
+                                result = self.model_trainer.train_model(symbol=symbol, X=X, y=y)
+
+                                if result:
+                                    self.model_predictor.reload_model(symbol)
+                                    self.logger.info(f"Successfully retrained and reloaded model for {symbol}.")
+                                else:
+                                    self.logger.warning(f"Retraining failed for {symbol}, continuing with old model.")
+                            else:
+                                self.logger.warning(f"No valid training data for retraining {symbol} up to {self.current_date.strftime('%Y-%m-%d')}")
+                        else:
+                             self.logger.warning(f"No target column found in retraining data for {symbol}")
+
+                    except Exception as e:
+                        self.logger.error(f"Error during model retraining for {symbol}: {e}", exc_info=True)
+
         except Exception as e:
-            self.logger.error(f"Error in model retraining: {e}")
+            self.logger.error(f"A critical error occurred during the retraining cycle: {e}", exc_info=True)
     
     def _get_price(self, symbol: str, date: datetime) -> Optional[float]:
         """Get price for symbol on specific date"""

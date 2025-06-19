@@ -49,8 +49,8 @@ class TradingParams:
     CASH_BUFFER_PCT = 20.0  # 20% minimum cash buffer
     
     # Risk Management - with environment overrides
-    STOP_LOSS_PCT = property(lambda self: self.get_env_float('STOP_LOSS_PCT', 2.0))  # 2% stop loss
-    PROFIT_TARGET_PCT = 3.0  # +3% profit target
+    STOP_LOSS_PCT = property(lambda self: self.get_env_float('STOP_LOSS_PCT', 5.0))  # 5% stop loss
+    PROFIT_TARGET_PCT = 10.0  # +10% profit target
     MAX_HOLD_DAYS = 10  # Maximum holding period
     MAX_SECTOR_EXPOSURE = property(lambda self: self.get_env_float('MAX_SECTOR_EXPOSURE', 0.30))  # 30% max sector exposure
     MAX_PORTFOLIO_RISK = property(lambda self: self.get_env_float('MAX_PORTFOLIO_RISK', 0.15))  # 15% max portfolio risk

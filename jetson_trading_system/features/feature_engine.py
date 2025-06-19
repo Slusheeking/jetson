@@ -206,7 +206,7 @@ class FeatureEngine:
             
             # Get base price data
             extended_start = (datetime.strptime(start_date, '%Y-%m-%d') - timedelta(days=200)).strftime('%Y-%m-%d')
-            price_data = self.db_manager.get_price_data(symbol, extended_start, end_date)
+            price_data = self.db_manager.get_market_data(symbol, extended_start, end_date)
             
             if price_data is None or len(price_data) < 50:
                 return None
@@ -225,6 +225,7 @@ class FeatureEngine:
             
             # 2. ML4T factors
             if self.config.ml4t_factors:
+                # Now generates composite factors
                 ml4t_features = self._generate_ml4t_features(symbol, price_data, extended_start, end_date)
                 if ml4t_features is not None:
                     feature_components.append(ml4t_features)
@@ -261,7 +262,7 @@ class FeatureEngine:
             if target_column:
                 target = self._generate_target(price_data, target_column)
                 if target is not None:
-                    features = features.join(target, how='outer')
+                    features = features.join(target, how='left')
             
             # Filter to requested date range
             features = features.loc[start_date:end_date]
@@ -453,18 +454,29 @@ class FeatureEngine:
             # Remove columns with too many missing values
             threshold = 0.8
             features = features.dropna(axis=1, thresh=int(threshold * len(features)))
-            
-            # Forward fill limited missing values
+
+            # If target exists, separate it before filling NaNs
+            target = None
+            if 'target' in features.columns:
+                target = features['target']
+                features = features.drop(columns=['target'])
+
+            # Forward fill limited missing values in features
             features = features.fillna(method='ffill', limit=5)
+            features = features.fillna(0)  # Fill remaining with 0
             
-            # Remove remaining rows with missing values
-            features = features.dropna()
-            
-            # Remove constant features
-            constant_features = [col for col in features.columns if features[col].nunique() <= 1]
+            # Re-attach target
+            if target is not None:
+                features = features.join(target, how='left')
+
+            # Remove constant features (after filling NaNs)
+            constant_features = [col for col in features.columns if features[col].nunique(dropna=False) <= 1 and col != 'target']
             if constant_features:
                 features = features.drop(columns=constant_features)
                 self.logger.info(f"Removed {len(constant_features)} constant features")
+
+            # Drop rows where ALL features are NaN (should be none after fill)
+            features = features.dropna(how='all', subset=[c for c in features.columns if c != 'target'])
             
             return features
             

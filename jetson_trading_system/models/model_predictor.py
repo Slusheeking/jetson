@@ -208,25 +208,16 @@ class ModelPredictor:
         """Create features for prediction using database indicators (matches training)"""
         
         try:
-            # Merge price data with indicators on timestamp
+            # Join indicators to price_data, ensuring all price_data rows are kept
             if not indicators.empty:
-                # Ensure timestamp alignment for merging
-                price_data = price_data.reset_index()
-                if 'timestamp' not in price_data.columns:
-                    price_data['timestamp'] = price_data.index
-                
-                indicators = indicators.reset_index()
-                if 'timestamp' not in indicators.columns:
-                    indicators['timestamp'] = indicators.index
-                
-                # Merge on timestamp - use suffixes to handle column conflicts
-                merged_data = pd.merge(price_data, indicators, on='timestamp', how='inner', suffixes=('', '_ind'))
-                merged_data = merged_data.set_index('timestamp')
+                # Reindex indicators to match price_data's index, filling missing forward
+                aligned_indicators = indicators.reindex(price_data.index, method='ffill')
+                merged_data = price_data.join(aligned_indicators, how='left', rsuffix='_ind')
             else:
                 merged_data = price_data.copy()
-            
+
             if merged_data.empty:
-                self.logger.warning(f"No merged data for {symbol} - price/indicator timestamp mismatch")
+                self.logger.warning(f"No data for {symbol} after joining indicators")
                 return pd.DataFrame()
             
             features = pd.DataFrame(index=merged_data.index)
@@ -339,8 +330,9 @@ class ModelPredictor:
             self.logger.error(f"Error creating features for {symbol}: {e}")
             return pd.DataFrame()
     
-    def predict(self, 
-               symbol: str, 
+    def predict(self,
+               symbol: str,
+               features_df: Optional[pd.DataFrame] = None,
                use_cache: bool = True,
                return_probability: bool = False) -> Optional[Dict[str, Any]]:
         """
@@ -363,9 +355,13 @@ class ModelPredictor:
                     self.logger.warning(f"No model available for {symbol}")
                     return None
             
-            # Check Redis cache
-            cache_key = f"prediction:{symbol}:{datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            if use_cache:
+            # Generate a cache key that is specific to the date of the features
+            cache_key = None
+            if use_cache and features_df is not None and not features_df.empty:
+                # Use the timestamp from the features DataFrame for the cache key
+                feature_date = features_df.index[0].strftime('%Y-%m-%d')
+                cache_key = f"prediction:{symbol}:{feature_date}"
+                
                 cached_prediction = self.cache_manager.get(cache_key)
                 if cached_prediction:
                     self.cache_hits += 1
@@ -373,10 +369,14 @@ class ModelPredictor:
             
             self.cache_misses += 1
             
-            # Get latest features
-            features = self.get_latest_features(symbol)
-            
+            # If features are not provided, get the latest from the database
+            if features_df is None:
+                features = self.get_latest_features(symbol)
+            else:
+                features = features_df
+
             if features is None or features.empty:
+                self.logger.warning(f"No features available for {symbol}, cannot predict.")
                 return None
             
             # Align features with model expectations
@@ -386,7 +386,7 @@ class ModelPredictor:
             available_features = [f for f in model_features if f in features.columns]
             missing_features = [f for f in model_features if f not in features.columns]
             
-            if missing_features:
+            if missing_features and use_cache:  # In backtesting (use_cache=False), it's expected to have missing features for early dates
                 self.logger.warning(f"Missing features for {symbol}: {missing_features}")
             
             if not available_features:
