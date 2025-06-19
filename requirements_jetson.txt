@@ -1,0 +1,141 @@
+# Jetson Trading System - ARM64 Optimized Dependencies
+# Production-ready ML4Trading system for NVIDIA Jetson Orin 16GB
+
+# Core Machine Learning & Computation
+numpy>=1.21.0,<1.25.0          # Optimized for ARM64
+pandas>=1.5.0,<2.0.0           # Data manipulation
+scikit-learn>=1.1.0,<1.4.0     # Machine learning toolkit
+scipy>=1.9.0,<1.12.0           # Scientific computing
+
+# LightGBM with GPU Support
+lightgbm>=3.3.0,<4.0.0         # Gradient boosting with CUDA support
+
+# Technical Analysis
+TA-Lib>=0.4.24                 # Technical analysis library
+
+# GPU Acceleration (Jetson specific)
+cupy-cuda11x>=11.0.0; platform_machine=="aarch64"  # GPU arrays for Jetson
+numba>=0.56.0,<0.59.0          # JIT compilation
+
+# Trading & Financial Data APIs
+alpaca-trade-api>=2.3.0,<3.0.0    # Alpaca trading API
+polygon-api-client>=1.7.0,<2.0.0  # Polygon market data API
+
+# Backtesting & Strategy Analysis
+zipline-reloaded>=2.2.0,<3.0.0     # Backtesting engine
+alphalens-reloaded>=0.4.0,<1.0.0   # Alpha factor analysis
+pyfolio-reloaded>=0.9.0,<1.0.0     # Portfolio analysis
+
+# Database & Caching
+aiosqlite>=0.17.0,<1.0.0       # Async SQLite
+redis>=4.3.0,<5.0.0            # Redis caching
+
+# Async Programming & Networking
+asyncio-mqtt>=0.10.0,<1.0.0    # MQTT async client
+aiohttp>=3.8.0,<4.0.0          # Async HTTP client
+websockets>=10.0,<12.0         # WebSocket support
+httpx>=0.23.0,<1.0.0           # Modern HTTP client
+
+# System Monitoring & Hardware
+psutil>=5.8.0,<6.0.0           # System monitoring
+py3nvml>=0.2.7,<1.0.0          # NVIDIA GPU monitoring
+jetson-stats>=4.2.0,<5.0.0; platform_machine=="aarch64"  # Jetson hardware stats
+
+# Configuration & Environment
+python-dotenv>=0.19.0,<2.0.0   # Environment variables
+pyyaml>=6.0,<7.0               # YAML configuration
+configparser>=5.0.0,<6.0.0     # INI configuration
+
+# Logging & Monitoring
+structlog>=22.1.0,<24.0.0      # Structured logging
+prometheus-client>=0.14.0,<1.0.0  # Metrics collection
+
+# Data Validation & Serialization
+pydantic>=1.10.0,<2.0.0        # Data validation
+marshmallow>=3.17.0,<4.0.0     # Serialization
+orjson>=3.8.0,<4.0.0           # Fast JSON
+
+# Date & Time Handling
+python-dateutil>=2.8.0,<3.0.0  # Date utilities
+pytz>=2022.1                   # Timezone handling
+pendulum>=2.1.0,<3.0.0         # Advanced date/time
+
+# Mathematical & Statistical Libraries
+statsmodels>=0.13.0,<1.0.0     # Statistical models
+arch>=5.3.0,<6.0.0             # ARCH/GARCH models
+
+# Visualization (Optional)
+matplotlib>=3.5.0,<4.0.0       # Plotting
+seaborn>=0.11.0,<1.0.0         # Statistical visualization
+plotly>=5.0.0,<6.0.0           # Interactive plots
+
+# Development & Testing
+pytest>=7.0.0,<8.0.0           # Testing framework
+pytest-asyncio>=0.20.0,<1.0.0  # Async testing
+black>=22.0.0,<24.0.0          # Code formatting
+isort>=5.10.0,<6.0.0           # Import sorting
+flake8>=4.0.0,<7.0.0           # Linting
+mypy>=0.991,<2.0.0             # Type checking
+
+# Performance Profiling
+line-profiler>=3.5.0,<5.0.0    # Line-by-line profiling
+memory-profiler>=0.60.0,<1.0.0 # Memory profiling
+py-spy>=0.3.14,<1.0.0          # Sampling profiler
+
+# Utility Libraries
+tqdm>=4.60.0,<5.0.0            # Progress bars
+click>=8.0.0,<9.0.0            # CLI framework
+rich>=12.0.0,<14.0.0           # Rich text and beautiful formatting
+tabulate>=0.8.0,<1.0.0         # Table formatting
+
+# Security & Encryption
+cryptography>=37.0.0,<42.0.0   # Cryptographic recipes
+bcrypt>=3.2.0,<5.0.0           # Password hashing
+
+# File I/O & Compression
+h5py>=3.7.0,<4.0.0             # HDF5 files
+openpyxl>=3.0.0,<4.0.0         # Excel files
+xlsxwriter>=3.0.0,<4.0.0       # Excel writing
+lz4>=4.0.0,<5.0.0              # Fast compression
+
+# Network & API Utilities
+requests>=2.28.0,<3.0.0        # HTTP requests
+urllib3>=1.26.0,<2.0.0         # HTTP client
+certifi>=2022.6.15             # Certificate bundle
+
+# Memory Management
+pympler>=0.9,<1.0              # Memory analysis
+
+# ARM64 Specific Optimizations
+# These are automatically handled by pip for aarch64 platform
+# but listed here for documentation
+
+# JetPack SDK Components (installed via apt)
+# nvidia-jetpack
+# cuda-toolkit-*
+# libcudnn8-dev
+# libnvinfer-dev
+# python3-libnvinfer-dev
+
+# System Dependencies (installed via apt)
+# build-essential
+# cmake
+# pkg-config
+# python3-dev
+# libhdf5-serial-dev
+# libatlas-base-dev
+# gfortran
+# libblas-dev
+# liblapack-dev
+# sqlite3
+# libsqlite3-dev
+# libta-lib-dev
+
+# Optional Development Tools
+jupyter>=1.0.0,<2.0.0          # Jupyter notebooks
+ipython>=8.0.0,<9.0.0          # Enhanced Python shell
+notebook>=6.4.0,<7.0.0         # Jupyter notebook server
+
+# Model Serving (Optional)
+fastapi>=0.85.0,<1.0.0         # Modern web framework
+uvicorn>=0.18.0,<1.0.0         # ASGI server
